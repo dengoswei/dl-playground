@@ -3,6 +3,7 @@ import json
 import sys
 import tensorflow as tf
 import numpy as np
+import read_data
 
 flags = tf.app.flags
 
@@ -15,7 +16,7 @@ flags.DEFINE_string("shared_data", "./shared.json", "[word2vec, word2idx")
 # config.word_emb_size
 
 def simple_cross_entropy(y, a):
-    return tf.reduce_mean(-y * tf.log(a) - (1-y) * tf.log(1-a))
+    return -tf.reduce_sum(y * tf.log(a))
 
 def get_initializer(matrix):
     def _initializer(shape, dtype=None, partition_info=None, **kwargs): return matrix
@@ -111,6 +112,10 @@ class Model(object):
 
         self.loss = simple_cross_entropy(tf.cast(self.y, 'float'), p)
 
+        predict = tf.greater(p, 0.5)
+        self.correct = tf.equal(predict, self.y)
+
+
 
     def get_loss(self):
         return self.loss
@@ -118,20 +123,23 @@ class Model(object):
     def get_global_step(self):
         return self.global_step
 
-    def get_feed_dict(self, batch):
+    def get_feed_dict(self, mq, mp, ml):
+        assert len(mq) == len(mp)
+        assert len(mq) == len(ml)
+        assert len(mp) == self.config.batch_size
+
+        batch_size = len(mq)
         config = self.config
-
         x = np.zeros(
-            [config.batch_size, config.max_sent_size], dtype='int32')
+            [batch_size, config.max_sent_size], dtype='int32')
         x_mask = np.zeros(
-            [config.batch_size, config.max_sent_size], dtype='bool')
+            [batch_size, config.max_sent_size], dtype='bool')
         q = np.zeros(
-            [config.batch_size, config.max_ques_size], dtype='int32')
+            [batch_size, config.max_ques_size], dtype='int32')
         q_mask = np.zeros(
-            [config.batch_size, config.max_ques_size], dtype='bool')
+            [batch_size, config.max_ques_size], dtype='bool')
 
-        y = np.zeros([config.batch_size], dtype='bool')
-
+        y = np.zeros([batch_size], dtype='bool')
         feed_dict = {}
         feed_dict[self.x] = x
         feed_dict[self.x_mask] = x_mask
@@ -139,24 +147,28 @@ class Model(object):
         feed_dict[self.q_mask] = q_mask
         feed_dict[self.y] = y
 
-        # x
-        for i, xi in enumerate(batch['X']):
+        for i, xi in enumerate(mp):
             for j, xij in enumerate(xi):
                 x[i, j] = xij
-        # q
-        for i, qi in enumerate(batch['Q']):
+
+        for i, qi in enumerate(mq):
             for j, qij in enumerate(qi):
                 q[i, j] = qij
-        # y
-        for i, yi in enumerate(batch['Y']):
-            y[i] = yi
+
+        for i, yi in enumerate(ml):
+            assert (0 == yi) or (2 == yi)
+            y[i] = 2 == yi
 
         return feed_dict
-
 
 def random_split(train_data, batch_size):
     batches = []
 
+
+def update_config(config, q, p):
+    # max_ques_size
+    config.max_ques_size = max(map(len, q))
+    config.max_sent_size = max(map(len, p))
 
 def fake_config(config):
     # batch_size
@@ -198,39 +210,59 @@ def fake_train_data(config):
 
 def main():
     config = flags.FLAGS
+    config.word_emb_size = 200
+    config.word_vocab_size = 200000
+    config.num_steps = 1000
+    config.batch_size = 50
 
-    #shared_data = read_shared(config.shared_data)
-    #word2vec_dict = shared['word2vec']
-    #word2idx_dict = shared['word2idx']
-    #idx2vec_dict = {\
-    #        word2idx_dict[word]: \
-    #            vec for word, vec in word2vec_dict.items() \
-    #                if word in word2idx_dict }
-    #emb_mat = np.array(
-    #        [idx2vec_dict[idx] if idx in idx2vec_dict
-    #            else np.random.multivariate_normal(
-    #                np.zeros(config.word_emb_size),
-    #                np.eye(config.word_emb_size))
-    #            for idx in range(config.word_vocab_size)])
-    #config.emb_mat = emb_mat
-    # for test: tmp
+    word2vec, word2idx = read_data.load_word_embedding(
+            "./data/ready.train.1.json", config.word_vocab_size)
+    print len(word2vec), len(word2idx)
+    q, p, l = read_data.load_sougou_data("./data/ready.train.1.json", word2idx)
+    q, p, l = read_data.filter_sougou_data(q, p, l)
+    print len(q), len(p), len(l)
 
+    update_config(config, q, p)
 
-    # TODO:
-    fake_config(config)
-    train_data = fake_train_data(config)
+    vq, vp, vl, q, p, l = read_data.split_data(q, p, l, 0.2)
+    print len(vq), len(vp), len(vl), len(q), len(p), len(l)
+
+    idx2vec_dict = { word2idx[w]: vec
+            for w, vec in word2vec.items() if w in word2idx }
+    print len(idx2vec_dict)
+#    emb_mat = np.array([np.zeros(config.word_emb_size) for idx in xrange(config.word_vocab_size)])
+    emb_mat = np.array([idx2vec_dict[idx] if idx in idx2vec_dict else np.zeros(config.word_emb_size) for idx in xrange(config.word_vocab_size)])
+    config.emb_mat = emb_mat
 
     model = Model(config)
 
-    train_op = tf.train.GradientDescentOptimizer(0.005).minimize(model.get_loss())
+    train_op = tf.train.GradientDescentOptimizer(0.001).minimize(model.get_loss())
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
-        for i in xrange(1000):
-            feed_dict = model.get_feed_dict(train_data)
+        step = 0
+        for mq, mp, ml in read_data.get_mini_batches(
+                q, p, l, config.num_steps, config.batch_size):
+            assert len(mq) == len(mp)
+            assert len(mq) == len(ml)
+            feed_dict = model.get_feed_dict(mq, mp, ml)
             loss, train_res = sess.run(
 			[model.get_loss(), train_op],
                         feed_dict=feed_dict)
-            print loss
+            print "loss", loss
+            step += 1
+            if 0 == step % 1000:
+                cors = []
+                try_cnt = 0
+                for vmq, vmp, vml in read_data.get_mini_batches(
+                        vq, vp, vl, 1, config.batch_size):
+                    feed_dict = model.get_feed_dict(vmq, vmp, vml)
+                    correct = sess.run([model.correct], feed_dict=feed_dict)
+                    cors.extend(correct)
+                    try_cnt += 1
+                    if 10 < try_cnt:
+                        break
+                accuracy = np.mean(cors)
+                print "step: ", step, " accuracy: ", accuracy, " / ", len(cors)
 
 if __name__ == "__main__":
     main()
