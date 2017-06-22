@@ -25,7 +25,7 @@ def birnn_att_model(
     query_embedded = tf.nn.embedding_lookup(
             embeddings_W, query, name="embed_query")
 
-    with tf.variable_scope("bigru"):
+    with tf.variable_scope("q_bigru"):
         cell = tf.contrib.rnn.GRUCell(hparams.gru_dim)
         _, (fw_f_u, bw_f_u) = tf.nn.bidirectional_dynamic_rnn(
                 cell, cell,
@@ -33,9 +33,11 @@ def birnn_att_model(
                 dtype='float', scope='gru')
         u = tf.concat([fw_f_u, bw_f_u], 1)
 
-        tf.get_variable_scope().reuse_variables()
+    with tf.variable_scope("d_bigru"):
+        #tf.get_variable_scope().reuse_variables()
+        dcell = tf.contrib.rnn.GRUCell(hparams.gru_dim)
         (fw_h, bw_h), _ = tf.nn.bidirectional_dynamic_rnn(
-                cell, cell,
+                dcell, dcell,
                 document_embedded, document_len,
                 dtype='float', scope='gru')
         h = tf.concat([fw_h, bw_h], 2)
@@ -56,8 +58,6 @@ def birnn_att_model(
         q_repr = tf.expand_dims(tf.matmul(u_norm, w) + b, 1)
         before_pow = tf.matmul(q_repr, h_norm, False, True)
         s = tf.reduce_sum(tf.square(tf.square(before_pow)), 2)
-        print before_pow.get_shape()
-        print s.get_shape()
 #        s = tf.squeeze(tf.reduce_sum(
 #                tf.square(tf.square(before_pow)), 2), [2])
 

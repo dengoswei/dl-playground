@@ -54,6 +54,12 @@ def main(unused_argv):
             batch_size=hparams.batch_size,
             num_epochs=FLAGS.num_epochs)
 
+#    features, target= input_fn_train()
+#
+#    # TODO
+#    probs, loss, train_op = model_fn()
+
+
     input_fn_eval = read_data.create_input_fn(
             mode=tf.contrib.learn.ModeKeys.EVAL,
             input_files=[VALIDATION_FILE],
@@ -74,7 +80,7 @@ def main(unused_argv):
     # ?
 
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = 2
+    #os.environ["CUDA_VISIBLE_DEVICES"] = "2"
     tf.app.run()
 
 
